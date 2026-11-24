@@ -1,0 +1,19 @@
+# Arquivos auxiliares de compilação LaTeX (mantendo apenas fontes e o PDF final se desejado)
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.lof
+*.lot
+
+# Sistema / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.bak
+*~

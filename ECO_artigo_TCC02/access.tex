@@ -1,0 +1,575 @@
+\documentclass{ieeeaccess}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english,brazil]{babel}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\floatname{algorithm}{Algoritmo}
+\renewcommand{\algorithmicrequire}{\textbf{Entrada:}}
+\renewcommand{\algorithmicfor}{\textbf{para}}
+\renewcommand{\algorithmicdo}{\textbf{faça}}
+\renewcommand{\algorithmicendfor}{\textbf{fim para}}
+\renewcommand{\algorithmiccomment}[1]{\hfill$\triangleright$ #1}
+\gdef\xfigwd{0pt}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{pict2e}
+\definecolor{diagbg}{cmyk}{0.05,0.02,0,0.02}
+\definecolor{diagborder}{cmyk}{0,0,0,0.75}
+\renewcommand{\figurename}{FIGURA}
+\renewcommand{\tablename}{TABELA}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+\history{Graduação em Engenharia de Computação}
+\doi{Trabalho de Conclusão de Curso.}
+\dataDaDefesa{xx{\slash}xx{\slash}2026}
+\title{Estratégias de Inferência Seletiva Baseada em Tiles para Aceleração da Detecção de Objetos em Dispositivos de Borda}
+\author{\uppercase{Rodrigo William da Silva},
+        \uppercase{Enzo Seraphim} \IEEEmembership{Orientador},
+        \uppercase{Thatiana Seraphim} \IEEEmembership{Coorientadora}}
+
+\markboth
+{Graduação em Engenharia de Computação}
+{Graduação em Engenharia de Computação}
+
+%\corresp{Corresponding author: Rodrigo William da Silva (e-mail: ...).}
+
+\begin{abstract}
+    A detecção de objetos em fluxos de vídeo de alta resolução em dispositivos de borda enfrenta um compromisso crítico entre qualidade espacial e custo computacional: redimensionar o quadro completo degrada a detecção de alvos distantes, enquanto dividir a imagem em recortes sobrepostos multiplica proibitivamente o número de inferências da rede neural. Este trabalho propõe e avalia uma arquitetura modular de inferência seletiva por recortes voltada a câmeras estáticas de videovigilância que trata um detector leve da família \textit{You Only Look Once} como uma caixa-preta, atuando exclusivamente sobre o fluxo de dados que o alimenta e unificando predições de fronteira por critérios geométricos de interseção. Foram investigados e calibrados dois paradigmas de decisão pré-modelo: filtragem orientada a movimento (diferença temporal de quadros, vizinhos mais próximos e mistura de gaussianas) e uma estrutura autoral de reaproveitamento de detecções em memória baseada em árvore hierárquica de assinaturas visuais extraídas pela transformada de Haar, dotada de tolerância a ruído e tempo de expiração assimétrico. A avaliação experimental sobre vinte sequências públicas de vigilância externa, abrangendo mais de trinta e seis mil quadros, revelou duas abordagens complementares de destaque frente ao processamento integral dos recortes. A filtragem por vizinhos mais próximos em escala reduzida preservou praticamente toda a eficácia original, atingindo pontuação harmônica de 94,99\% com aceleração de 2,59 vezes. Por sua vez, a árvore de assinaturas visuais suprimiu 88,8\% das chamadas à rede neural, alcançando aceleração média de 8,00 vezes, pontuação harmônica de 89,65\% e superioridade na retenção de pedestres estacionários.
+\end{abstract}
+
+\begin{keywords}
+    Computação de borda, detecção de objetos, inferência seletiva, processamento por recortes, visão computacional, YOLO.
+\end{keywords}
+
+\titlepgskip=-15pt
+
+\maketitle
+
+% =====================================================================
+% SEÇÃO I — INTRODUÇÃO
+% =====================================================================
+\section{Introdução}
+\label{sec:introducao}
+
+\PARstart{O}{crescimento} acelerado na geração de dados por sensores e sistemas conectados --- estimados em mais de 21 bilhões de dispositivos ativos globalmente em 2025, com projeção de 39 bilhões até 2030 \cite{iotanalytics2025devices, idc2018datage} --- tem impulsionado a migração do processamento computacional para a borda da rede (\textit{edge computing}), próximo à origem da captura \cite{shi2016edge, zhou2019edge}. Restrições práticas de largura de banda, latência, custo de transmissão e privacidade tornam inviável transferir fluxos contínuos de vídeo em alta definição exclusivamente para a nuvem, consolidando a demanda por inteligência artificial embarcada (\textit{Edge AI}) em aplicações como a videovigilância inteligente \cite{bcc2025edgeai, mnm2024videosurveillance}.
+
+Apesar dessa demanda, a maior parte dos sistemas comerciais de monitoramento em operação no mundo real ainda não executa redes neurais profundas continuamente na ponta, recorrendo a sensores ou heurísticas clássicas de variação luminosa que sofrem com altas taxas de falsos alarmes diante de sombras, vegetação ou mudanças climáticas. Apenas recentemente, com o amadurecimento de detectores de estágio único compactos da família YOLO \cite{redmon2016yolo, terven2023yolo} e estudos de implantação em plataformas embarcadas modernas \cite{kong2026edgesocs, shalash2026benchmark}, tornou-se plausível vislumbrar a detecção semântica diretamente em dispositivos de borda. Entretanto, a inferência da rede neural permanece o principal gargalo computacional \cite{chen2019dl, kong2026edgesocs}. O problema agrava-se em câmeras de segurança que monitoram áreas amplas em alta resolução: submeter o quadro inteiro redimensionado à pequena entrada nativa do detector degrada a representação de pedestres distantes, ao passo que fatiar a imagem em recortes (\textit{tiles}) preserva a detecção de objetos pequenos \cite{akyon2022sahi}, mas multiplica proibitivamente o número de inferências por quadro.
+
+Enquanto grande parte da literatura concentra-se na compressão interna dos modelos (como poda e quantização), recebe menor atenção o controle sobre o volume de dados efetivamente entregue à rede. Em câmeras estáticas de vigilância, onde predomina forte redundância espacial e temporal entre quadros consecutivos, grande parte dos recortes representa regiões de fundo inalteradas. Diante desse cenário, este trabalho propõe e avalia uma arquitetura de pipeline de inferência seletiva por \textit{tiles} que trata o detector YOLO como uma caixa-preta --- sem alterar seus pesos nem exigir retreinamento ---, interpondo um bloco de decisão leve para suprimir ou reaproveitar recortes redundantes antes da inferência.
+
+Para investigar empiricamente o compromisso entre redução de custo computacional e preservação da eficácia de detecção, definem-se três objetivos específicos para este trabalho:
+\begin{enumerate}
+    \item \textbf{Projetar e implementar} um pipeline modular de detecção por \textit{tiles} sobrepostos com cálculo automático de cobertura e consolidação global de fronteiras ($\mathrm{IoU}$ e $\mathrm{IoM}$) sobre um detector YOLO caixa-preta;
+    \item \textbf{Adaptar, propor e calibrar} estratégias leves de decisão pré-modelo sob dois paradigmas distintos: seleção orientada a movimento (Diferença de Quadros, KNN e MOG2) e reaproveitamento de detecções em memória via Árvore de \textit{Hash Wavelet};
+    \item \textbf{Avaliar comparativamente} as estratégias propostas frente ao pipeline de referência (\textit{baseline}) sobre sequências reais de videovigilância estática, caracterizando os ganhos de velocidade e os impactos na acurácia.
+\end{enumerate}
+
+O restante deste artigo está organizado da seguinte forma: a Seção~\ref{sec:revisao} fundamenta a revisão bibliográfica sobre o custo da detecção na borda, fatiamento por \textit{tiles} e redução de inferência redundante; a Seção~\ref{sec:metodologia} detalha a arquitetura do pipeline e os algoritmos do bloco de decisão; a Seção~\ref{sec:resultados} apresenta a calibração experimental, as métricas e a discussão dos resultados nas sequências da base VIRAT; e a Seção~\ref{sec:conclusao} sintetiza as conclusões frente aos objetivos traçados e aponta direções para trabalhos futuros.
+
+% =====================================================================
+% SEÇÃO II — REVISÃO BIBLIOGRÁFICA
+% =====================================================================
+\section{Revisão Bibliográfica}
+\label{sec:revisao}
+
+A fundamentação deste trabalho percorre três eixos, do problema geral às técnicas
+específicas. O primeiro situa a detecção de objetos em tempo real e evidencia por
+que sua execução é custosa em dispositivos de borda com recursos restritos. O segundo apresenta o
+fatiamento de imagens de alta resolução em recortes (\textit{tiles}), prática
+consolidada para a detecção de objetos pequenos. O terceiro examina as estratégias
+propostas na literatura para reduzir a inferência redundante em vídeo, com seus
+respectivos compromissos. Ao final, esses eixos são sintetizados para posicionar a abordagem desenvolvida neste trabalho.
+
+\subsection{Detecção de objetos e seu custo em hardware restrito}
+\label{subsec:deteccao_custo}
+
+A detecção de objetos consiste em localizar e classificar simultaneamente
+múltiplos objetos em uma imagem. Os detectores baseados em aprendizado
+profundo organizam-se em duas famílias: os de \textit{dois estágios}, que
+primeiro geram regiões candidatas e depois as classificam, alcançando alta
+acurácia a um custo computacional elevado; e os de \textit{estágio único},
+que tratam a detecção como um único problema de regressão, prevendo as caixas
+delimitadoras e as classes em uma só passada pela rede. A família YOLO
+(\textit{You Only Look Once}) consolidou esta segunda abordagem: ao reformular
+a detecção como uma regressão de ponta a ponta, o modelo original processa
+imagens em tempo real a 45 quadros por segundo (FPS), e até 155 FPS em sua
+versão reduzida, em uma unidade de processamento gráfico (GPU) de mesa \cite{redmon2016yolo}. As versões
+seguintes aprimoraram o equilíbrio entre velocidade e acurácia e introduziram
+variantes leves (classes \textit{nano} e \textit{small}), tornando o YOLO a
+escolha de referência para detecção em tempo real em dispositivos de borda
+\cite{terven2023yolo}.
+
+Em dispositivos de borda com recursos computacionais restritos, contudo,
+a inferência da rede torna-se o custo dominante do pipeline: benchmarks em
+computadores de placa única (\textit{Single-Board Computers}, SBCs) como o Raspberry Pi 5 reportam apenas cerca
+de 2 quadros por segundo ao executar variantes leves (\textit{nano}) do YOLO, chegando a
+aproximadamente 3 FPS em modo de alto desempenho \cite{shalash2026benchmark}.
+Mesmo em \textit{Systems-on-Chip} (SoCs) de borda dotados de aceleradores dedicados, a latência de
+inferência, e não a contagem nominal de operações de ponto flutuante (FLOPs), é o principal
+fator de custo, correlacionando-se mais fortemente com a acurácia (\textit{mean Average Precision}, mAP) do
+modelo do que com seu número de parâmetros; sob carga, a largura de banda de
+memória emerge como o gargalo determinante \cite{kong2026edgesocs}. Como
+referência, a literatura considera ``tempo real'' valores em torno de
+25--30 FPS para aplicações de videovigilância \cite{kong2026edgesocs}.
+
+Conclui-se que, mesmo nas variantes mais leves, a inferência permanece o
+componente mais caro da detecção em dispositivos de borda. É, portanto, sobre esse
+custo, e sobre a quantidade de dados submetida à rede, que recaem as
+principais oportunidades de otimização discutidas nas subseções seguintes.
+
+\subsection{Detecção em imagens de alta resolução por divisão em tiles}
+\label{subsec:tiling}
+
+A entrada nativa dos detectores YOLO opera em resoluções da ordem de algumas
+centenas de pixels (por exemplo, $640\times640$). Quando uma imagem de alta
+resolução, como um quadro 4K de uma câmera de segurança, é redimensionada
+para essa entrada, os objetos pequenos ou distantes perdem a maior parte de seus
+pixels e tornam-se difíceis de detectar. Uma técnica consolidada para contornar
+esse problema é a divisão da imagem em recortes (\textit{tiles}): em vez de
+processar o quadro inteiro reduzido, a imagem é fatiada em vários recortes
+menores, processados de forma independente pelo detector. A abordagem
+\textit{Slicing Aided Hyper Inference} (SAHI) formaliza essa ideia como um
+procedimento genérico, aplicável sobre qualquer detector já treinado e
+\textit{sem necessidade de retreinamento}: o quadro é dividido em recortes
+sobrepostos, cada um é redimensionado e submetido ao detector individualmente, e
+as predições são reunidas ao final por \textit{Non-Maximum Suppression} (NMS)
+\cite{akyon2022sahi}. A sobreposição (\textit{overlap}) entre os recortes é o
+que evita que objetos situados nas bordas sejam cortados entre dois tiles.
+Avaliações em conjuntos de imagens aéreas e de vigilância mostram ganhos
+consistentes de acurácia para objetos pequenos (da ordem de 5 a 7 pontos
+percentuais de AP sobre detectores como FCOS, VFNet e TOOD \cite{akyon2022sahi}), e o ganho se confirma especificamente para modelos YOLO
+\cite{keles2022sliced}.
+
+Essa melhoria, contudo, tem um custo direto: ao multiplicar o número de recortes
+submetidos à rede, o fatiamento aumenta proporcionalmente a quantidade de
+inferências por quadro e, com isso, o tempo total de processamento
+\cite{keles2022sliced}. Em dispositivos de borda, onde, como discutido
+anteriormente, cada inferência já é custosa, processar dezenas de recortes por
+quadro pode inviabilizar a operação em tempo real. Esse custo motiva uma pergunta
+natural: seria necessário submeter \textit{todos} os recortes ao detector a cada
+quadro? É justamente a possibilidade de tratar os tiles de forma diferenciada,
+processando apenas parte deles, que abre caminho para as estratégias de
+redução de inferência redundante discutidas a seguir.
+
+\subsection{Estratégias para reduzir a inferência redundante}
+\label{subsec:reducao_redundancia}
+
+Reduzido o quadro a um conjunto de recortes, coloca-se o problema central deste
+trabalho: dado esse conjunto, como decidir quais recortes de fato exigem
+inferência e quais podem ser pulados ou reaproveitados? A literatura ataca a
+redução de inferência redundante em vídeo por dois caminhos distintos
+\cite{jiao2022vodsurvey}. No
+primeiro, \textit{pré-modelo}, um componente leve decide, antes do detector, o
+que merece ser processado, tratando a rede como caixa-preta. No segundo,
+\textit{intra-modelo}, reescreve-se a própria computação interna da rede para
+reaproveitar resultados entre quadros. Como a arquitetura proposta neste trabalho trata o YOLO
+como caixa-preta, o primeiro caminho é o diretamente aplicável; o segundo é
+discutido ao final, como contraste.
+
+As abordagens pré-modelo exploram a forte redundância temporal de câmeras
+estáticas, em que pouco muda entre quadros consecutivos. A estratégia mais
+difundida é a filtragem por diferença entre quadros: o NoScope
+\cite{kang2017noscope} antepõe ao modelo um detector de diferenças (\textit{difference detector}) de
+baixíssimo custo (capaz de operar a até cem mil quadros por segundo em uma unidade central de processamento, CPU)
+combinado a modelos especializados em cascata, descartando quadros redundantes em
+cenas de câmera de ângulo fixo. O Reducto \cite{li2020reducto} leva a filtragem
+para a própria câmera,
+decidindo por comparação de diferenças de características de baixo nível
+(bordas, pixels) com limiares ajustados dinamicamente conforme o conteúdo; em
+câmeras de baixo custo, filtra entre 51\% e 97\% dos quadros mantendo a
+acurácia-alvo. Uma segunda família dispara o detector apenas
+quando há mudança e usa rastreamento leve nos quadros intermediários, como no
+Glimpse \cite{chen2015glimpse}, que envia ao servidor apenas
+\textit{quadros-gatilho} e rastreia localmente os objetos entre eles. Mais
+próximo da arquitetura aqui investigada, Plastiras \emph{et al.} \cite{plastiras2019selective}
+atuam no nível dos recortes: dividem a
+imagem em tiles processados sem redimensionamento e, por um mecanismo de
+atenção, processam apenas alguns tiles por quadro, enquanto um mecanismo de
+memória rastreia os objetos nos tiles não processados, reaproveitando detecções
+anteriores, em uma abordagem voltada a câmeras de veículos aéreos não tripulados
+(UAV) de baixo custo. Essas abordagens
+variam em custo e robustez, de limiares fixos simples a decisões adaptativas,
+e, em sua maioria, decidem no nível do \textit{quadro inteiro}, e não do
+recorte individual.
+
+O caminho intra-modelo, por sua vez, reduz a redundância reescrevendo a
+computação da rede. O \textit{Deep Feature Flow} \cite{zhu2017dff}, por exemplo,
+executa o custoso extrator de características apenas em quadros-chave esparsos e
+propaga os mapas de características para os demais quadros por meio de um campo de
+fluxo óptico, obtendo aceleração da ordem de dez vezes com pequena perda de
+acurácia. Embora eficaz, essa família exige acesso ao interior do
+detector, o que a torna incompatível com o tratamento do modelo como
+caixa-preta adotado neste trabalho. De modo geral, levantamentos recentes da área
+de detecção de objetos em vídeo identificam a informação duplicada entre quadros
+como um dos principais desafios e oportunidades de eficiência
+\cite{jiao2022vodsurvey}, confirmando que a redução de redundância é uma linha
+ativa e bem fundamentada, ainda que pouco explorada na combinação específica
+visada aqui: decisão por recorte, leve e adequada a dispositivos de borda.
+
+\subsection{Síntese e justificativa}
+\label{subsec:sintese}
+
+A revisão evidencia três pontos que, em conjunto, delimitam o espaço deste
+trabalho. Primeiro, em dispositivos de borda com recursos restritos a inferência do detector é o
+custo dominante do pipeline. Segundo, o fatiamento da imagem em tiles é a forma
+consolidada de detectar objetos pequenos em quadros de alta resolução, mas
+multiplica o número de inferências por quadro. Terceiro, há diversas
+estratégias para evitar inferência redundante em vídeo: de um lado, abordagens
+\textit{pré-modelo}, que decidem o que processar tratando o detector como
+caixa-preta (filtragem por diferença de quadros, gatilho por mudança, seleção de
+tiles); de outro, abordagens \textit{intra-modelo}, que reescrevem a computação
+da rede e exigem acesso ao seu interior \cite{zhu2017dff}.
+
+Como a arquitetura proposta mantém o detector como caixa-preta, as abordagens
+intra-modelo ficam fora de escopo, e as estratégias pré-modelo constituem o
+conjunto de candidatas. Nota-se, porém, que essas estratégias já operam na borda,
+mas decidem majoritariamente no nível do \textit{quadro inteiro}
+\cite{li2020reducto, kang2017noscope}; a seleção no nível de \textit{tile},
+embora existente, surge em contexto de câmera móvel \cite{plastiras2019selective}.
+A combinação explorada neste trabalho --- decisão por tile, aproveitando a redundância
+temporal de uma câmera estática, com um filtro leve e anterior à inferência ---
+reúne esses elementos de um modo ainda pouco explorado. Na seção seguinte, detalha-se a arquitetura de pipeline desenvolvida e as estratégias de decisão implementadas para avaliar empiricamente o compromisso entre ganho de desempenho e preservação da acurácia nesse cenário.
+
+% =====================================================================
+% SEÇÃO III — METODOLOGIA
+% =====================================================================
+\section{Metodologia}
+\label{sec:metodologia}
+
+\subsection{Visão geral da arquitetura}
+\label{subsec:visao_geral}
+
+A técnica de inferência seletiva por \textit{tiles} proposta organiza o processamento de cada quadro de vídeo em quatro estágios: (i) divisão do quadro em recortes (\textit{tiles}) sobrepostos; (ii) um \textbf{bloco de decisão}, que determina quais recortes serão submetidos ao detector; (iii) a inferência do detector YOLO apenas sobre os recortes selecionados, em lote (\textit{batch}); e (iv) a consolidação das detecções dos recortes em coordenadas do quadro completo. O detector é tratado como uma caixa-preta: seus pesos e sua arquitetura não são alterados, e a técnica atua exclusivamente sobre os dados que o alimentam. A Fig.~\ref{fig:arquitetura} compara o fluxo de referência (\textit{baseline}) com a arquitetura proposta.
+
+\begin{figure*}[t!]
+\centering
+\vspace*{4pt}
+{\sffamily\footnotesize
+\setlength{\unitlength}{1mm}
+\newcommand{\stagebox}[2]{%
+  \fcolorbox{diagborder}{white}{\parbox[c][10mm][c]{#1}{\centering #2}}%
+}
+\newcommand{\decbox}[2]{%
+  \setlength{\fboxrule}{1.1pt}%
+  \fcolorbox{accessblue}{diagbg}{\parbox[c][10mm][c]{#1}{\centering #2}}%
+  \setlength{\fboxrule}{0.4pt}%
+}
+\begin{tabular}{@{}l@{\hspace{3mm}}c@{\hspace{1.5mm}}c@{\hspace{1.5mm}}c@{\hspace{1.5mm}}c@{\hspace{1.5mm}}c@{\hspace{1.5mm}}c@{\hspace{1.5mm}}c@{\hspace{1.5mm}}c@{\hspace{1.5mm}}c@{}}
+\textbf{(a)} &
+\stagebox{24mm}{Quadro de Vídeo\\($W \times H$)} &
+$\xrightarrow{\hspace{4mm}}$ &
+\stagebox{27mm}{Divisão em \textit{Tiles}\\($C \times L$ sobrepostos)} &
+$\xrightarrow{\;\mathcal{T}\;}$ &
+\stagebox{28mm}{Detector YOLO\\(todos os $C \times L$ \textit{tiles})} &
+$\xrightarrow{\;\mathcal{R}\;}$ &
+\stagebox{27mm}{Consolidação Global\\(IoU + IoM)} &
+$\xrightarrow{\;\mathcal{B}_t\;}$ &
+\stagebox{22mm}{Detecções\\do Quadro}
+\\[9mm]
+\textbf{(b)} &
+\stagebox{24mm}{Quadro de Vídeo\\($W \times H$)} &
+$\xrightarrow{\hspace{4mm}}$ &
+\stagebox{27mm}{Divisão em \textit{Tiles}\\($C \times L$ sobrepostos)} &
+$\xrightarrow{\;\mathcal{T}\;}$ &
+\decbox{28mm}{\textbf{Bloco de Decisão}\\(Movimento / \textit{Hash})} &
+$\xrightarrow{\mathcal{S} \subseteq \mathcal{T}}$ &
+\stagebox{27mm}{YOLO Seletivo\\(lote apenas com $\mathcal{S}$)} &
+$\xrightarrow{\mathcal{R} \cup \mathcal{C}}$ &
+\stagebox{27mm}{Consolidação Global\\(IoU + IoM)}
+\end{tabular}
+
+\vspace{1.5mm}
+{\scriptsize \textit{Fluxo opcional no Bloco de Decisão (modo Hash):} consulta e reaproveitamento de detecções em cache ($\mathcal{C}$) e atualização pós-inferência ($\mathcal{R} \to D$).}
+}
+\caption{Comparação entre (a) o pipeline de referência (\textit{baseline}), em que todos os $C \times L$ \textit{tiles} são submetidos ao detector a cada quadro, e (b) a arquitetura proposta, na qual o bloco de decisão seleciona apenas o subconjunto $\mathcal{S} \subseteq \mathcal{T}$ de \textit{tiles} que exigem inferência e, quando aplicável, reaproveita detecções armazenadas $\mathcal{C}$.}
+\label{fig:arquitetura}
+\end{figure*}
+
+O bloco de decisão é um módulo intercambiável, o que permite avaliar diferentes estratégias sobre o mesmo pipeline. Ele segue uma interface comum: dado o quadro atual e o conjunto de \textit{tiles}, retorna o subconjunto de \textit{tiles} que devem passar pelo detector. Opcionalmente, o bloco pode (a) receber de volta as detecções produzidas pelo detector, para atualizar seu estado interno, e (b) fornecer detecções reaproveitadas de quadros anteriores para os \textit{tiles} que não foram inferidos. Esses dois comportamentos opcionais são usados pelo método baseado em \textit{hash} (Seção~\ref{subsec:decisao}). O pipeline de referência (\textit{baseline}) corresponde ao caso em que o bloco de decisão seleciona todos os \textit{tiles} em todos os quadros. O Algoritmo~\ref{alg:pipeline} resume o fluxo.
+
+\begin{algorithm}[t]
+\caption{Pipeline de inferência seletiva por \textit{tiles}}
+\label{alg:pipeline}
+\begin{algorithmic}[1]
+\REQUIRE vídeo $V$, bloco de decisão $D$, detector $M$
+\FOR{cada quadro $f_t$ de $V$}
+  \STATE $\mathcal{T} \gets \textsc{Dividir}(f_t)$
+  \STATE $\mathcal{S} \gets D.\textsc{Selecionar}(f_t, \mathcal{T})$
+  \STATE $\mathcal{R} \gets M.\textsc{Detectar}(\mathcal{S})$ \COMMENT{em lote}
+  \STATE $D.\textsc{Atualizar}(\mathcal{S}, \mathcal{R})$ \COMMENT{se aplicável}
+  \STATE $\mathcal{R} \gets \mathcal{R} \cup D.\textsc{Reaproveitadas}()$ \COMMENT{se aplicável}
+  \STATE $\mathcal{B}_t \gets \textsc{Consolidar}(\mathcal{R}, \mathcal{T})$
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Divisão do quadro em \textit{tiles}}
+\label{subsec:tiles}
+
+O quadro de largura $W$ e altura $H$ é dividido em uma grade de $C$ colunas por $L$ linhas de \textit{tiles} de tamanho fixo $w \times h$. Os parâmetros $C$, $L$, $w$ e $h$ são configuráveis, e a sobreposição entre \textit{tiles} adjacentes não é fixada pelo usuário: ela é calculada automaticamente, de modo que os \textit{tiles} cubram todo o quadro com a mesma distância entre si e o último \textit{tile} de cada linha e coluna termine exatamente na borda. A posição inicial do $i$-ésimo \textit{tile} em cada eixo é dada por
+\begin{equation}
+x_i = \left\lfloor i \,\frac{W - w}{C - 1} \right\rfloor, \quad y_j = \left\lfloor j \,\frac{H - h}{L - 1} \right\rfloor,
+\label{eq:posicao_tiles}
+\end{equation}
+com $i = 0,\ldots,C-1$ e $j = 0,\ldots,L-1$. A sobreposição resultante entre \textit{tiles} vizinhos é $w - (W - w)/(C - 1)$ na horizontal e $h - (H - h)/(L - 1)$ na vertical. Essa sobreposição evita que objetos situados nas bordas sejam cortados entre dois \textit{tiles}, como discutido para o SAHI na Seção~\ref{subsec:tiling}.
+
+Nos experimentos deste trabalho, os vídeos têm resolução de $1280 \times 720$ pixels. Para essa resolução, adotou-se uma grade de $5 \times 3$ \textit{tiles} de $320 \times 320$ pixels, totalizando 15 \textit{tiles} por quadro, com sobreposição de 80 pixels na horizontal e 120 pixels na vertical. Essa configuração foi escolhida por se ajustar bem ao tamanho do quadro; outras resoluções exigiriam a escolha de uma nova grade.
+
+\subsection{Estratégias do bloco de decisão}
+\label{subsec:decisao}
+
+Foram implementadas e avaliadas cinco estratégias para o bloco de decisão, descritas a seguir. As três primeiras famílias de métodos (diferença de quadros, KNN e MOG2) compartilham o mesmo princípio: um filtro leve de movimento gera uma máscara binária de primeiro plano e um \textit{tile} é selecionado quando o número de pixels ativos em sua região excede um limiar. O método baseado em \textit{hash} segue um princípio distinto, o reaproveitamento de detecções.
+
+\subsubsection{Baseline}
+Todos os $C \times L$ \textit{tiles} são enviados ao detector em todos os quadros. Esse é o pipeline de referência, contra o qual o ganho de eficiência e a perda de acurácia dos demais métodos são medidos.
+
+\subsubsection{Seleção por movimento}
+Nos três métodos desta família, o quadro é convertido para escala de cinza e suavizado por um filtro gaussiano, para reduzir o ruído de compressão do vídeo. Em seguida, uma máscara binária $M_t$ de primeiro plano é calculada por um método específico, descrito adiante. Para cada \textit{tile} $k$ com região $R_k$, conta-se o número de pixels ativos e o \textit{tile} é selecionado se
+\begin{equation}
+\sum_{(x,y) \in R_k} M_t(x,y) > p_{\min},
+\label{eq:limiar_pixels}
+\end{equation}
+em que $p_{\min}$ é o número mínimo de pixels ativos. Nos métodos que operam em resolução reduzida por um fator $s$, a máscara é calculada no quadro reduzido, a região $R_k$ é convertida para essa escala e o limiar é ajustado para $s^2\,p_{\min}$.
+
+\textit{Diferença de quadros.} A máscara é obtida pela diferença absoluta entre o quadro atual $I_t$ e o quadro $I_{t-n}$, com passo $n$ configurável, seguida de limiarização com limite $\theta$ e dilatação morfológica:
+\begin{equation}
+M_t = \mathrm{dilatar}\big(\,|I_t - I_{t-n}| > \theta\,\big).
+\label{eq:framediff}
+\end{equation}
+Comparar com um quadro anterior distante (e não com o imediatamente anterior) evita que movimentos lentos produzam diferenças pequenas demais. Como o método precisa de $n$ quadros de histórico, nenhum \textit{tile} é selecionado nos primeiros $n$ quadros do vídeo.
+
+\textit{KNN.} A máscara é produzida pelo subtrator de fundo baseado em $k$ vizinhos mais próximos de Zivkovic e van der Heijden \cite{zivkovic2006knn}, na implementação do OpenCV \cite{opencv}. O método mantém um histórico de amostras por pixel e classifica como primeiro plano os pixels cuja distância ao modelo de fundo excede o limiar $d^2$. O modelo é inicializado com alguns passos de aquecimento sobre o primeiro quadro, para que o fundo estático seja aprendido imediatamente. A máscara é limiarizada e dilatada para não perder objetos pequenos ou distantes.
+
+\textit{MOG2.} A máscara é produzida pelo modelo de mistura de gaussianas adaptativo de Zivkovic \cite{zivkovic2004mog2}, também na implementação do OpenCV. Cada pixel é modelado por uma mistura cujo número de componentes se ajusta à cena, e a variância do fundo determina o limiar de detecção. Neste método, a máscara passa por uma abertura morfológica para eliminar ruídos pequenos, como folhagem e artefatos de compressão.
+
+\subsubsection{Reaproveitamento por \textit{hash}}
+Em vez de detectar movimento, este método decide se o conteúdo de um \textit{tile} já foi visto antes e, em caso afirmativo, reaproveita as detecções armazenadas, evitando a inferência. Para cada posição de \textit{tile} mantém-se uma árvore de \textit{hashes} visuais de resolução crescente. Cada \textit{tile} de $320\times320$ pixels é convertido para escala de cinza e decomposto pela transformada \textit{wavelet} de Haar bidimensional, aplicada sucessivamente ao quadrante de baixa frequência (LL), o que gera aproximações diádicas de $160\times160$, $80\times80$, $40\times40$, $20\times20$, $10\times10$ e $5\times5$ pixels apenas com somas inteiras e deslocamento de bits, sem recorrer a redimensionamento. Cada aproximação selecionada é binarizada em relação à sua média, gerando um \textit{hash} de $s^2$ bits, em que $s$ é o lado da aproximação. Os \textit{hashes} selecionados formam os níveis da árvore, do mais grosseiro ($5\times5$) ao mais detalhado (por exemplo, $40\times40$ ou $80\times80$), e cada folha armazena as detecções do YOLO para aquele conteúdo e o quadro em que foram obtidas.
+
+Na consulta, a árvore do \textit{tile} é percorrida nível a nível. Em cada nível, o \textit{hash} calculado é comparado com os existentes; considera-se uma correspondência quando a distância de Hamming é de no máximo $\lfloor \epsilon s^2 \rceil$ bits, com $\epsilon$ a razão de tolerância, o que absorve o ruído da câmera. Se a folha é alcançada e a sua validade não expirou, ocorre um \textit{acerto} (\textit{cache hit}) e as detecções armazenadas são reutilizadas. A validade é limitada por um tempo de vida (\textit{time to live}, TTL) em quadros, distinto para folhas com detecções ($\tau_{+}$) e sem detecções ($\tau_{0}$), o que força uma reverificação periódica do conteúdo. Caso contrário, há um \textit{erro} (\textit{cache miss}): o \textit{tile} é enviado ao YOLO e, após a inferência, o resultado é inserido na árvore. O Algoritmo~\ref{alg:hash} resume o método.
+
+\begin{algorithm}[t]
+\caption{Decisão por \textit{hash} em árvore}
+\label{alg:hash}
+\begin{algorithmic}[1]
+\REQUIRE quadro $f_t$, \textit{tiles} $\mathcal{T}$
+\STATE $\mathcal{S} \gets \emptyset$; $\mathcal{C} \gets \emptyset$
+\FOR{cada \textit{tile} $k \in \mathcal{T}$}
+  \STATE $(h_1,\ldots,h_n) \gets \textsc{HashesWavelet}(k)$
+  \STATE $no \gets \textsc{Raiz}(\text{posição de } k)$
+  \FOR{$i = 1$ \textbf{até} $n$}
+    \STATE $no \gets \textsc{Correspondente}(no,\, h_i,\, \epsilon)$
+    \STATE \textbf{se} $no$ não existe \textbf{então} \textbf{pare}
+  \ENDFOR
+  \IF{$no$ é folha \textbf{e} $t - no.\text{quadro} \le \tau$}
+    \STATE $\mathcal{C} \gets \mathcal{C} \cup no.\text{detecções}$ \COMMENT{acerto}
+  \ELSE
+    \STATE $\mathcal{S} \gets \mathcal{S} \cup \{k\}$ \COMMENT{erro}
+  \ENDIF
+\ENDFOR
+\RETURN $\mathcal{S}$, $\mathcal{C}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Inferência e consolidação}
+\label{subsec:inferencia}
+
+\subsubsection{Inferência}
+O detector empregado é o YOLOv8n, variante \textit{nano} da biblioteca Ultralytics \cite{ultralytics}, com pesos pré-treinados no conjunto COCO \cite{lin2014coco}. O modelo é utilizado sem modificações e restrito à classe \textit{pessoa}, com limiar de confiança de 0,25. Os \textit{tiles} selecionados pelo bloco de decisão são agrupados e processados em um único lote, com resolução de entrada de $640\times640$ pixels; assim, cada \textit{tile} de $320\times320$ pixels é ampliado por um fator de dois, o que favorece a detecção de objetos pequenos. Cada detecção é retornada em coordenadas locais ao \textit{tile} de origem.
+
+\subsubsection{Consolidação}
+As detecções locais são convertidas para o sistema de coordenadas do quadro completo somando-se a posição $(x_k, y_k)$ do \textit{tile} de origem. Como \textit{tiles} adjacentes se sobrepõem, o mesmo objeto pode ser detectado mais de uma vez, e um objeto situado sobre a fronteira pode aparecer cortado em dois \textit{tiles}. A consolidação trata ambos os casos com dois critérios, no mesmo espírito do SAHI \cite{akyon2022sahi}. Dadas duas caixas $A$ e $B$, a razão de interseção sobre união (IoU) e a razão de interseção sobre a menor área (IoM) são
+\begin{equation}
+\mathrm{IoU} = \frac{|A \cap B|}{|A \cup B|}, \qquad
+\mathrm{IoM} = \frac{|A \cap B|}{\min(|A|,\,|B|)}.
+\label{eq:iou_iom}
+\end{equation}
+O IoU identifica caixas de tamanho semelhante que descrevem o mesmo objeto, enquanto o IoM identifica o caso em que uma caixa pequena (a metade cortada) está contida em outra maior.
+
+As detecções são ordenadas priorizando as que não encostam na borda do \textit{tile} (margem de 8 pixels), por serem mais prováveis de conter o objeto inteiro, e, em seguida, por confiança. Percorrendo essa lista, duas caixas são fundidas quando $\mathrm{IoU} \ge \theta_{\mathrm{IoU}}$ ou $\mathrm{IoM} \ge \theta_{\mathrm{IoM}}$. Adicionalmente, caixas de \textit{tiles} diferentes que encostam ambas na borda são fundidas com critérios mais brandos ($\mathrm{IoM} \ge 0{,}25$ ou $\mathrm{IoU} \ge 0{,}15$), pois indicam um único objeto cortado pela fronteira. Nesse caso, a caixa resultante é o envelope das duas, e a confiança final é o máximo entre elas. Os limiares principais utilizados foram $\theta_{\mathrm{IoU}} = 0{,}45$ e $\theta_{\mathrm{IoM}} = 0{,}50$.
+
+% =====================================================================
+% SEÇÃO IV — RESULTADOS E DISCUSSÃO
+% =====================================================================
+\section{Resultados e Discussão}
+\label{sec:resultados}
+
+Esta seção apresenta o protocolo experimental, a base de dados, as métricas de avaliação, o estudo de calibração e ablação dos hiperparâmetros e a análise comparativa dos resultados obtidos.
+
+\subsection{Base de dados e referência (\textit{ground truth})}
+\label{subsec:dataset}
+
+Os experimentos foram conduzidos sobre 20 sequências de vídeo do conjunto público VIRAT \cite{oh2011virat}, referência consolidada em videovigilância. Foram selecionadas sequências provenientes de duas câmeras estáticas externas voltadas a áreas de circulação de pedestres (pátios, calçadas e zonas de convivência), descartando-se cenas exclusivamente viárias, uma vez que o foco do estudo recai sobre a detecção de pessoas em múltiplas escalas de distância. Os vídeos exibem longos períodos de baixa atividade intercalados por fluxo de pedestres individuais ou em grupos, pessoas que permanecem paradas temporariamente, além de variações sutis de iluminação e movimentação de vegetação. Todas as 20 sequências possuem resolução de $1280 \times 720$ pixels, totalizando $36.355$ quadros efetivamente avaliados (após o descarte dos quadros iniciais de aquecimento) e $149.719$ instâncias de pedestres de referência.
+
+Como o objetivo central do trabalho é quantificar o compromisso entre o ganho de eficiência computacional e a eventual perda de detecções introduzida pela seleção de \textit{tiles} sobre um mesmo detector caixa-preta, adotou-se como referência (\textit{ground truth}) a saída consolidada do pipeline de referência (\textit{baseline}), no qual o detector é executado sobre todos os 15 \textit{tiles} de todos os quadros sem supressão pré-modelo. Dessa forma, isola-se o efeito exclusivo do bloco de decisão: qualquer divergência em relação à referência decorre diretamente de \textit{tiles} omitidos ou de detecções reaproveitadas, e não de limitações intrínsecas da rede neural.
+
+\subsection{Métricas de avaliação}
+\label{subsec:metricas}
+
+A avaliação contempla duas dimensões complementares: a eficácia na preservação das detecções e a eficiência computacional do pipeline.
+
+\subsubsection{Métricas de eficácia}
+Em cada quadro avaliado, as caixas delimitadoras consolidadas pelo método sob teste são confrontadas com as caixas de referência. Uma detecção é contabilizada como verdadeiro positivo ($\mathrm{TP}$) quando apresenta sobreposição $\mathrm{IoU} \ge 0{,}40$ com uma caixa de referência ainda não associada do mesmo quadro (reportando-se complementarmente o desempenho sob o critério mais estrito $\mathrm{IoU} \ge 0{,}50$, além do $\mathrm{IoU}$ médio dos pares casados). Caixas preditas sem correspondência na referência constituem falsos positivos ($\mathrm{FP}$), e caixas de referência não detectadas constituem falsos negativos ($\mathrm{FN}$). A partir dos totais acumulados nas 20 sequências (avaliação global \textit{micro}), calculam-se a precisão (\textit{Precision}), a revocação (\textit{Recall}) e a pontuação $F_1$:
+\begin{equation}
+\mathrm{Precision} = \frac{\mathrm{TP}}{\mathrm{TP} + \mathrm{FP}}, \quad
+\mathrm{Recall} = \frac{\mathrm{TP}}{\mathrm{TP} + \mathrm{FN}}, \quad
+F_1 = \frac{2 \cdot \mathrm{Precision} \cdot \mathrm{Recall}}{\mathrm{Precision} + \mathrm{Recall}}.
+\label{eq:metricas_eficacia}
+\end{equation}
+No contexto da inferência seletiva, a revocação mede diretamente a fração de pessoas reais preservadas após a filtragem de \textit{tiles}, enquanto a precisão penaliza a permanência de caixas obsoletas (``fantasmas'') quando detecções anteriores são reaproveitadas.
+
+\subsubsection{Métricas de eficiência}
+O desempenho computacional é instrumentado em modo \textit{headless} (sem renderização gráfica ou gravação de vídeo em disco) por meio de temporizadores de alta resolução e monitoramento do processo no sistema operacional, descartando-se os primeiros $N_{\text{warmup}} = 10$ quadros de cada vídeo para estabilização. São registradas:
+\begin{itemize}
+    \item \textbf{Latência por estágio e total (ms):} tempo médio amortizado por quadro gasto em cada etapa do pipeline (divisão em \textit{tiles}, bloco de decisão, inferência YOLO e consolidação) e o tempo total por quadro;
+    \item \textbf{Taxa de processamento (FPS) e \textit{Speedup}:} quantidade média de quadros processados por segundo ($1000 / T_{\text{total}}$) e o fator de aceleração relativo ao \textit{baseline} ($T_{\text{base}} / T_{\text{total}}$);
+    \item \textbf{Proporção de \textit{tiles} enviados (\%):} percentual médio de \textit{tiles} efetivamente submetidos ao YOLO em relação aos 15 \textit{tiles} por quadro (cujo complemento corresponde à taxa de \textit{tiles} poupados);
+    \item \textbf{Uso médio de CPU (\%):} percentual médio de utilização do processador pelo processo ao longo da execução, normalizado pelo número de núcleos lógicos.
+\end{itemize}
+
+\subsection{Ambiente experimental e calibração de hiperparâmetros}
+\label{subsec:configuracao}
+
+Todos os experimentos foram conduzidos em um computador equipado com processador Intel Core i5-10210U a 1,60~GHz (4 núcleos físicos e 8 lógicos) e 12~GB de memória RAM, executando Windows~10, Python~3.13, OpenCV \cite{opencv} e a implementação oficial do YOLOv8n da biblioteca Ultralytics \cite{ultralytics}.
+
+Antes da execução em larga escala nas 20 sequências, realizou-se um estudo preliminar de calibração e ablação sobre duas sequências representativas (uma de cada câmera: \texttt{VIRAT\_S\_010003\_10} e \texttt{VIRAT\_S\_010200\_10}), nas quais foram avaliadas 25 variações de hiperparâmetros distribuídas entre as quatro famílias de decisão. Para evitar escolhas arbitrárias, a configuração representativa de cada método foi selecionada maximizando um índice ponderado entre eficácia ($F_1$) e percentual de redução de tempo em relação ao \textit{baseline} ($0{,}70\,F_1 + 0{,}30\,\Delta T$ para os filtros de movimento e $0{,}65\,F_1 + 0{,}35\,\Delta T$ para o método de \textit{hash}).
+
+\begin{table}[t!]
+\caption{Impacto de hiperparâmetros selecionados no estudo de ablação (média nas duas sequências de calibração)}
+\label{tab:ablacao}
+\centering
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Variação Analisada} & \textbf{Filtro (ms)} & \textbf{Total (ms)} & \textbf{\textit{Speedup}} & \textbf{Prec. (\%)} & \textbf{F1 (\%)} \\
+\midrule
+FrameDiff ($p_{\min}\!=\!150, \theta\!=\!25, n\!=\!2$) & 11,28 & 419,90 & 3,21$\times$ & 100,00 & 78,40 \\
+FrameDiff ($p_{\min}\!=\!75, \theta\!=\!20, n\!=\!3$)$^{\star}$  & 11,88 & 534,45 & 2,52$\times$ & 100,00 & \textbf{85,38} \\
+\midrule
+KNN ($p_{\min}\!=\!150, d^2\!=\!200, s\!=\!0{,}75$) & 32,48 & 593,10 & 2,27$\times$ & 100,00 & \textbf{91,54} \\
+KNN ($p_{\min}\!=\!150, d^2\!=\!200, s\!=\!0{,}50$)$^{\star}$ & \textbf{10,58} & \textbf{549,02} & \textbf{2,45$\times$} & 100,00 & 90,48 \\
+\midrule
+\textit{Wavelet} $5..80$ (sem TTL: $0/0$)    & 10,68 & \textbf{94,09}  & \textbf{14,31$\times$} & 72,52  & 75,96 \\
+\textit{Wavelet} $5..80$ ($\text{TTL}\!=\!6/30$)     & 10,39 & 170,39 & 7,90$\times$  & 94,45  & \textbf{93,62} \\
+\textit{Wavelet} $5..40$ ($\text{TTL}\!=\!6/30$)$^{\star}$    & \textbf{9,31}  & 157,01 & 8,58$\times$  & \textbf{94,44}  & 93,34 \\
+\bottomrule
+\multicolumn{6}{l}{\scriptsize $^{\star}$Configurações eleitas para a avaliação global nas 20 sequências.}
+\end{tabular}
+\end{table}
+
+A Tabela~\ref{tab:ablacao} destaca os recortes mais reveladores desse estudo de ablação, evidenciando como mecanismos auxiliares de suporte são determinantes para viabilizar os algoritmos na prática:
+\begin{enumerate}
+    \item \textbf{Passo temporal e sensibilidade na Diferença de Quadros:} comparar quadros muito próximos ($n=2$) com limiar elevado ($p_{\min}=150$) acelera o pipeline ($3{,}21\times$), mas penaliza severamente o $F_1$ ($78{,}40\%$) ao perder pedestres em caminhada lenta; ampliar o passo para $n=3$ com $p_{\min}=75$ e $\theta=20$ elevou o $F_1$ médio em quase 7 pontos percentuais ($85{,}38\%$);
+    \item \textbf{Redução de escala no KNN:} reduzir o fator de escala de $s=0{,}75$ para $s=0{,}50$ reduziu o custo computacional do próprio filtro KNN em três vezes (de $32{,}48$~ms para $10{,}58$~ms por quadro), mantendo o $F_1$ acima de $90\%$;
+    \item \textbf{Papel crítico do TTL e profundidade da árvore \textit{Wavelet}:} operar a árvore sem expiração temporal ($\tau_{+}=0, \tau_{0}=0$) produz aceleração extrema ($14{,}31\times$), mas degrada a precisão média para $72{,}52\%$ devido à retenção indefinida de caixas obsoletas quando um pedestre deixa o \textit{tile} sem alterar suficientemente os bits de baixa frequência. A introdução do TTL assimétrico ($\tau_{+}=6, \tau_{0}=30$) restaura a precisão para $94{,}45\%$ e o $F_1$ para mais de $93\%$. Ademais, truncar a árvore em quatro níveis ($5\times5$ até $40\times40$, dispensando a folha de $80\times80$) reduziu o tempo do filtro para $9{,}31$~ms e ampliou o \textit{speedup} para $8{,}58\times$ com variação desprezível de $F_1$ ($0{,}28$ ponto percentual).
+\end{enumerate}
+
+A Tabela~\ref{tab:parametros} consolida todos os parâmetros fixados após a calibração para a bateria principal.
+
+\begin{table}[t!]
+\caption{Parâmetros finais do pipeline e das estratégias de decisão}
+\label{tab:parametros}
+\centering
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lll}
+\toprule
+\textbf{Componente / Método} & \textbf{Parâmetro} & \textbf{Valor} \\
+\midrule
+Divisão em \textit{tiles} & Grade ($C \times L$) & $5 \times 3$ (15 \textit{tiles}) \\
+                          & Tamanho do \textit{tile} ($w \times h$) & $320 \times 320$ px \\
+                          & Sobreposição ($x, y$) & $80$ px, $120$ px \\
+\midrule
+Detector e Consolidação   & Modelo / Entrada & YOLOv8n / $640 \times 640$ \\
+                          & Limiar de confiança & $0{,}25$ (classe \textit{person}) \\
+                          & Limiares $\theta_{\mathrm{IoU}}$, $\theta_{\mathrm{IoM}}$ & $0{,}45$, $0{,}50$ \\
+\midrule
+Diferença de Quadros      & Fator de escala ($s$) & $0{,}75$ \\
+                          & Passo temporal ($n$) & $3$ quadros \\
+                          & Limiares ($\theta$, $p_{\min}$) & $20$, $75$ px \\
+\midrule
+KNN                       & Fator de escala ($s$) & $0{,}50$ \\
+                          & Histórico / Limiar $d^2$ & $500$ / $200{,}0$ \\
+                          & Pixels ativos ($p_{\min}$) & $150$ px \\
+\midrule
+MOG2                      & Histórico / Limiar var. & $500$ / $25{,}0$ \\
+                          & Pixels ativos ($p_{\min}$) & $100$ px \\
+\midrule
+\textit{Hash} (\textit{Wavelet}) & Níveis da árvore ($s$) & $(5, 10, 20, 40)$ \\
+                          & Razão de tolerância ($\epsilon$) & $0{,}015$ ($1{,}5\%$) \\
+                          & Validade TTL ($\tau_{+}$, $\tau_{0}$) & $6$, $30$ quadros \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Resultados globais e discussão}
+\label{subsec:analise_resultados}
+
+A Tabela~\ref{tab:resultados_gerais} apresenta os resultados globais consolidados sobre os $36.355$ quadros e $149.719$ instâncias de pedestres das 20 sequências avaliadas. No pipeline de referência (\textit{baseline}), a execução do YOLOv8n sobre todos os 15 \textit{tiles} exige em média $1437{,}94$~ms por quadro apenas na etapa de inferência (de um total de $1438{,}36$~ms, ou $0{,}70$~FPS), enquanto o fatiamento ($0{,}23$~ms) e a consolidação ($0{,}14$~ms) têm custo residual inferior a $0{,}03\%$ do ciclo. Isso confirma experimentalmente a premissa central da revisão: o gargalo reside quase integralmente no número de recortes submetidos à rede neural.
+
+\begin{table*}[t!]
+\caption{Desempenho global consolidado nas 20 sequências do conjunto VIRAT ($36.355$ quadros avaliados e $149.719$ instâncias de referência)}
+\label{tab:resultados_gerais}
+\centering
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lcccccccccc}
+\toprule
+\textbf{Estratégia de Decisão} & \textbf{Filtro (ms)} & \textbf{YOLO (ms)} & \textbf{Total (ms)} & \textbf{FPS} & \textbf{\textit{Speedup}} & \textbf{\textit{Tiles} Enviados (\%)} & \textbf{Precision @0,40} & \textbf{Recall @0,40} & \textbf{F1 @0,40} & \textbf{F1 @0,50} \\
+\midrule
+\textit{Baseline} (15 \textit{tiles}/quadro) & ---   & 1437,94 & 1438,36 & 0,70 & 1,00$\times$ & 100,0\% & 100,00\% & 100,00\% & 100,00\% & 100,00\% \\
+Diferença de Quadros ($n=3$)                 & 12,75 & 549,73  & 562,93  & 1,78 & 2,56$\times$ & 37,6\%  & 99,95\%  & 88,22\%  & 93,72\%  & 93,68\%  \\
+Subtração de Fundo (KNN)                     & 11,02 & 543,79  & 555,24  & 1,80 & 2,59$\times$ & 37,1\%  & \textbf{99,97\%}  & \textbf{90,48\%}  & \textbf{94,99\%}  & \textbf{94,95\%}  \\
+Subtração de Fundo (MOG2)                    & 40,38 & 353,02  & 393,82  & 2,54 & 3,65$\times$ & 24,1\%  & 99,80\%  & 72,31\%  & 83,86\%  & 83,77\%  \\
+\textit{Hash} em Árvore (\textit{Wavelet})   & \textbf{10,45} & \textbf{168,88}  & \textbf{179,89}  & \textbf{5,56} & \textbf{8,00$\times$} & \textbf{11,2\%}  & 89,56\%  & 89,73\%  & 89,65\%  & 87,72\%  \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsubsection{Desempenho dos métodos baseados em movimento}
+Entre os seletores orientados a movimento, o \textbf{KNN} obteve o melhor equilíbrio geral e a maior eficácia de todo o experimento, alcançando $F_1$ global de $94{,}99\%$ ($\mathrm{Recall} = 90{,}48\%$ e $\mathrm{Precision} = 99{,}97\%$), com estabilidade praticamente idêntica sob o limiar mais rigoroso $\mathrm{IoU} \ge 0{,}50$ ($F_1 = 94{,}95\%$ e $\mathrm{IoU}$ médio de $0{,}999$ nos verdadeiros positivos). Isso ocorre porque, quando o filtro seleciona um \textit{tile}, a inferência é feita pelo próprio YOLOv8n sobre a imagem atual, gerando caixas geometricamente idênticas às do \textit{baseline} e praticamente isentas de falsos positivos (apenas 43 em quase 150 mil instâncias). Ao descartar $62{,}9\%$ dos \textit{tiles}, o KNN reduziu a latência total por quadro em $61{,}4\%$ (de $1438{,}36$~ms para $555{,}24$~ms, um \textit{speedup} de $2{,}59\times$). Em sequências com movimentação contínua de pedestres, como \texttt{VIRAT\_S\_010201\_09} e \texttt{VIRAT\_S\_010202\_01}, o KNN atingiu revocação de $99{,}96\%$ e $99{,}05\%$, respectivamente, replicando quase integralmente o \textit{baseline} na metade do tempo.
+
+A \textbf{Diferença de Quadros} apresentou comportamento próximo ao KNN em velocidade ($562{,}93$~ms por quadro, \textit{speedup} de $2{,}56\times$ e $37{,}6\%$ de \textit{tiles} enviados), mantendo $F_1$ competitivo de $93{,}72\%$, embora com revocação $2{,}26$ pontos percentuais inferior ($88{,}22\%$). Sua principal fragilidade manifesta-se quando pedestres param ou caminham muito lentamente ao fundo: na sequência \texttt{VIRAT\_S\_010206\_03}, caracterizada por baixa amplitude de deslocamento entre $t$ e $t-3$, sua revocação caiu para $18{,}81\%$ (contra $65{,}49\%$ do KNN).
+
+O \textbf{MOG2}, por sua vez, apresentou o pior compromisso dessa família. Seu custo de decisão em resolução nativa foi quase quatro vezes superior ao do KNN ($40{,}38$~ms por quadro), e a combinação da adaptação gaussiana com a abertura morfológica (necessária para conter falsos disparos em folhagens) suprimiu partes de pedestres distantes ou estacionários, derrubando a revocação global para $72{,}31\%$ ($F_1 = 83{,}86\%$), apesar do \textit{speedup} de $3{,}65\times$.
+
+\subsubsection{Desempenho do reaproveitamento por árvore \textit{Wavelet}}
+A estratégia autoral baseada em \textbf{Árvore de \textit{Hash Wavelet}} destacou-se pela redução drástica da carga sobre a rede neural: em média, apenas $11{,}2\%$ dos \textit{tiles} precisaram ser submetidos ao YOLO ($88{,}8\%$ de inferências poupadas), reduzindo o tempo total de processamento de $1438{,}36$~ms para $179{,}89$~ms por quadro ($5{,}56$~FPS) --- uma redução de tempo de $87{,}5\%$ e um \textit{speedup} médio de $8{,}00\times$ (alcançando picos entre $11{,}0\times$ e $16{,}1\times$ em vídeos com menor ocupação espacial, como \texttt{VIRAT\_S\_010001\_08} e \texttt{VIRAT\_S\_010005\_03}). Além disso, por operar exclusivamente com somas inteiras, deslocamentos de bits e consultas em tabela \textit{hash} com parada antecipada nos níveis iniciais da árvore, obteve o menor custo de filtragem entre todas as técnicas ($10{,}45$~ms por quadro).
+
+Em termos de eficácia, o método alcançou revocação global de $89{,}73\%$ (superior à da Diferença de Quadros e muito próxima aos $90{,}48\%$ do KNN) e $F_1$ de $89{,}65\%$. A diferença estrutural entre os dois paradigmas fica evidente na comparação entre precisão e comportamento em alvos estáticos:
+\begin{itemize}
+    \item \textbf{Vantagem sobre alvos estacionários:} na sequência crítica \texttt{VIRAT\_S\_010206\_03}, em que todos os métodos de movimento falharam ao absorver pedestres parados no fundo ($F_1$ de $31{,}66\%$ no FrameDiff, $9{,}78\%$ no MOG2 e $79{,}15\%$ no KNN), a árvore \textit{Wavelet} atingiu $F_1 = 89{,}89\%$ ($\mathrm{Recall} = 86{,}60\%$), pois o \textit{cache hit} preserva e reaproveita as detecções previamente gravadas na folha enquanto o pedestre permanece imóvel, e o expirar de $\tau_{+} = 6$ quadros garante revalidação periódica junto ao YOLO;
+    \item \textbf{Penalidade de precisão e localização temporal:} em contrapartida, enquanto os filtros de movimento exibiram precisão próxima a $100\%$, o método de \textit{hash} registrou precisão de $89{,}56\%$ e $\mathrm{IoU}$ médio de $0{,}874$ nos acertos. Isso decorre do próprio mecanismo de reaproveitamento: durante os poucos quadros de validade de $\tau_{+}$ em que pequenas variações de posição não rompem a tolerância de Hamming ($\epsilon = 1{,}5\%$), a caixa reaproveitada apresenta leve defasagem espacial em relação à posição instantânea do pedestre (ou permanece ativa por até $\tau_{+}$ quadros logo após sua saída da borda do \textit{tile}), explicando tanto os falsos positivos temporários quanto a leve queda de $F_1$ para $87{,}72\%$ em $\mathrm{IoU} \ge 0{,}50$.
+\end{itemize}
+
+\subsubsection{Síntese comparativa e limitações observadas}
+Em conjunto, os resultados demonstram que não há uma única técnica universalmente superior em ambas as métricas, mas sim duas soluções claramente dominantes (fronteira de Pareto) conforme o requisito da aplicação: o \textbf{KNN} quando a prioridade é preservar a acurácia do detector original quase sem perdas ($F_1 \approx 95\%$ e zero caixas defasadas, com ganho de velocidade de $2{,}59\times$), e a \textbf{Árvore de \textit{Hash Wavelet}} quando a restrição computacional exige redução agressiva de inferências (\textit{speedup} de $8{,}00\times$ com preservação de quase $90\%$ de $F_1$ e imunidade ao desaparecimento de objetos parados).
+
+Cabe ressaltar, por fim, que embora a aceleração de até $8\times$ represente um avanço expressivo sobre o \textit{baseline} ($0{,}70 \to 5{,}56$~FPS em CPU de uso geral, com ocupação média de processador mantida em torno de $80\%$--$84\%$), a operação direta em mundo real a $25$--$30$~FPS sobre múltiplos fluxos ainda demanda otimizações complementares de engenharia --- tais como quantização do modelo caixa-preta (por exemplo, exportação para ONNX/INT8), controle dinâmico de orçamento máximo de \textit{tiles} por quadro sob rajadas de movimento global (como ventanias ou mudanças bruscas de iluminação) e interpolação cinemática entre quadros.
+
+% =====================================================================
+% SEÇÃO V — CONCLUSÃO
+% =====================================================================
+\section{Conclusão}
+\label{sec:conclusao}
+
+Este trabalho investigou a redução de inferências redundantes na detecção de objetos em fluxos de vídeo de câmeras estáticas, propondo e avaliando uma arquitetura de inferência seletiva baseada em recortes (\textit{tiles}) sobre um detector YOLO tratado como caixa-preta. Retomando os três objetivos específicos estabelecidos na Seção~\ref{sec:introducao}, todos foram cumpridos: (i) projetou-se e implementou-se um pipeline modular capaz de particionar quadros em grades com sobreposição automática e unificar predições de fronteira via $\mathrm{IoU}$ e $\mathrm{IoM}$; (ii) adaptaram-se, propuseram-se e calibraram-se estratégias leves de decisão pré-modelo contemplando tanto a seleção por movimento (Diferença de Quadros, KNN e MOG2) quanto o reaproveitamento de detecções em memória por meio de uma Árvore de \textit{Hash Wavelet}; e (iii) avaliou-se comparativamente o compromisso entre desempenho computacional e acurácia ao longo de 20 sequências reais do conjunto VIRAT ($36.355$ quadros e $149.719$ instâncias de referência).
+
+Os resultados experimentais evidenciaram duas abordagens complementares de destaque conforme os requisitos da aplicação. Quando a prioridade recai sobre a preservação rigorosa das detecções, a subtração de fundo por \textbf{KNN} em escala reduzida ($s=0{,}50$) obteve $F_1$ global de $94{,}99\%$ e precisão de $99{,}97\%$, descartando $62{,}9\%$ dos recortes e acelerando o pipeline em $2{,}59\times$. Quando o cenário demanda máxima redução de carga computacional, a \textbf{Árvore de \textit{Hash Wavelet}} poupou $88{,}8\%$ das execuções na rede neural, alcançando aceleração média de $8{,}00\times$ ($0{,}70 \to 5{,}56$~FPS) com $F_1$ de $89{,}65\%$ e notável estabilidade diante de pedestres estacionários. Constatou-se, ademais, um importante aprendizado de engenharia: a eficácia prática desses métodos depende diretamente de mecanismos auxiliares acoplados ao pipeline --- tais como suavização de ruído de compressão, ajuste de escala, tolerância proporcional de Hamming, expiração assimétrica por TTL e costura de caixas nas bordas ---, sem os quais a aplicação isolada dos algoritmos degrada substancialmente a qualidade das predições.
+
+Embora os ganhos obtidos validem de forma consistente o potencial da arquitetura proposta, cabe ponderar que os resultados constituem uma validação experimental inicial e que a implantação direta em sistemas comerciais de tempo real estrito ($25$--$30$~FPS) ainda requer evoluções adicionais. Como direções para trabalhos futuros, destacam-se: (a) a incorporação de módulos de estabilização para operação contínua ao vivo, incluindo um orquestrador de orçamento por fila de prioridade para conter picos de carga sob variações bruscas de cena e um rastreador cinemático leve para interpolar posições nos quadros omitidos; (b) a investigação de estratégias híbridas que combinem a precisão espacial do sinal de movimento com a retenção em \textit{cache} da árvore de \textit{hashes}, bem como a extração de vetores de movimento diretamente do fluxo de vídeo comprimido; e (c) a ampliação dos testes para conjuntos de dados com maior diversidade de câmeras e para plataformas embarcadas dedicadas (como \textit{Single-Board Computers}), aliando a inferência seletiva à otimização de execução do próprio modelo (como exportação para ONNX e quantização em ponto fixo).
+
+\section*{Agradecimentos}
+[Agradecimentos (opcional / em elaboração).]
+
+\bibliographystyle{IEEEtran}
+\bibliography{referencias}
+
+\EOD
+
+\end{document}
